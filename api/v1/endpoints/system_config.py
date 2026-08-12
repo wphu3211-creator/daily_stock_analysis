@@ -48,46 +48,187 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+
 # ---------------------------------------------------------------------------
 # /market_indices — 主要指数实时行情 (Portal topbar 依赖)
 # ---------------------------------------------------------------------------
 # code → key 映射 (前端用 key 做 DOM 匹配)
 _CODE_KEY_MAP = {
+    # CN
     "sh000001": "shanghai",
     "sz399001": "shenzhen",
     "sz399006": "chinext",
     "sh000688": "star50",
     "sh000016": "sse50",
     "sh000300": "csi300",
+    # HK
+    "HSI": "hsi",
+    "HSCEI": "hscei",
+    "HSTECH": "hstech",
+    # US
+    "int_dji": "dji",
+    "int_nasdaq": "nasdaq",
+    "int_sp500": "sp500",
 }
+
+
+def _fetch_cn_indices() -> list[dict]:
+    """Fetch CN A-share indices via akshare (sina source)."""
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_spot_sina()
+        indices_map = {
+            'sh000001': '上证指数',
+            'sz399001': '深证成指',
+            'sz399006': '创业板指',
+            'sh000688': '科创50',
+            'sh000016': '上证50',
+            'sh000300': '沪深300',
+        }
+        results = []
+        for code, name in indices_map.items():
+            row = df[df['代码'] == code]
+            if row.empty:
+                row = df[df['代码'].str.contains(code)]
+            if not row.empty:
+                r = row.iloc[0]
+                current = float(r.get('最新价', 0) or 0)
+                prev_close = float(r.get('昨收', 0) or 0)
+                results.append({
+                    'code': code,
+                    'key': _CODE_KEY_MAP.get(code, code),
+                    'name': name,
+                    'region': 'cn',
+                    'current': current,
+                    'change': float(r.get('涨跌额', 0) or 0),
+                    'change_pct': float(r.get('涨跌幅', 0) or 0),
+                    'open': float(r.get('今开', 0) or 0),
+                    'high': float(r.get('最高', 0) or 0),
+                    'low': float(r.get('最低', 0) or 0),
+                    'prev_close': prev_close,
+                    'volume': float(r.get('成交量', 0) or 0),
+                    'amount': float(r.get('成交额', 0) or 0),
+                })
+        return results
+    except Exception as e:
+        logger.warning("CN indices fetch failed: %s", e)
+        return []
+
+
+def _fetch_hk_indices() -> list[dict]:
+    """Fetch HK indices via akshare (sina source)."""
+    try:
+        import akshare as ak
+        df = ak.stock_hk_index_spot_sina()
+        indices_map = {
+            'HSI': '恒生指数',
+            'HSCEI': '国企指数',
+            'HSTECH': '恒生科技',
+        }
+        results = []
+        for code, name in indices_map.items():
+            row = df[df['代码'] == code]
+            if not row.empty:
+                r = row.iloc[0]
+                current = float(r.get('最新价', 0) or 0)
+                prev_close = float(r.get('昨收', 0) or 0)
+                change = float(r.get('涨跌额', 0) or 0)
+                change_pct = float(r.get('涨跌幅', 0) or 0)
+                results.append({
+                    'code': code,
+                    'key': _CODE_KEY_MAP.get(code, code),
+                    'name': name,
+                    'region': 'hk',
+                    'current': current,
+                    'change': change,
+                    'change_pct': change_pct,
+                    'open': float(r.get('今开', 0) or 0),
+                    'high': float(r.get('最高', 0) or 0),
+                    'low': float(r.get('最低', 0) or 0),
+                    'prev_close': prev_close,
+                    'volume': 0,
+                    'amount': 0,
+                })
+        return results
+    except Exception as e:
+        logger.warning("HK indices fetch failed: %s", e)
+        return []
+
+
+def _fetch_us_indices() -> list[dict]:
+    """Fetch US indices via sina finance API directly."""
+    import requests
+    indices_map = {
+        'int_dji': '道琼斯',
+        'int_nasdaq': '纳斯达克',
+        'int_sp500': '标普500',
+    }
+    symbols = ','.join(indices_map.keys())
+    url = f'https://hq.sinajs.cn/list={symbols}'
+    headers = {'Referer': 'https://finance.sina.com.cn'}
+    results = []
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        # Parse response: var hq_str_int_dji="道琼斯,46247.29,299.97,0.65";
+        for line in resp.text.strip().split('\n'):
+            if '=' not in line:
+                continue
+            var_part, val_part = line.split('=', 1)
+            symbol = var_part.split('_')[-1]
+            # Reconstruct full symbol
+            full_symbol = f'int_{symbol}' if not symbol.startswith('int_') else symbol
+            # Actually the format is: var hq_str_int_dji=...
+            # So we need to extract from var name
+            sym = var_part.replace('var hq_str_', '')
+            vals = val_part.strip('";').split(',')
+            if len(vals) >= 4:
+                name = vals[0]
+                current = float(vals[1] or 0)
+                change = float(vals[2] or 0)
+                change_pct = float(vals[3] or 0)
+                results.append({
+                    'code': sym,
+                    'key': _CODE_KEY_MAP.get(sym, sym),
+                    'name': name,
+                    'region': 'us',
+                    'current': current,
+                    'change': change,
+                    'change_pct': change_pct,
+                    'open': 0,
+                    'high': 0,
+                    'low': 0,
+                    'prev_close': current - change if change else 0,
+                    'volume': 0,
+                    'amount': 0,
+                })
+    except Exception as e:
+        logger.warning("US indices fetch failed: %s", e)
+    return results
 
 
 @router.get(
     "/market_indices",
     summary="Get major market indices",
-    description="Return real-time major market index data for Portal topbar.",
+    description="Return real-time major market index data (CN + HK + US) for Portal topbar.",
 )
-async def get_market_indices(region: str = "cn"):
-    """REST wrapper around the agent tool ``_handle_get_market_indices``."""
+async def get_market_indices():
+    """Fetch indices from CN, HK, and US markets."""
     from datetime import datetime, timezone
-    from src.agent.tools.market_tools import _handle_get_market_indices
-
-    result = _handle_get_market_indices(region=region)
-
-    if "error" in result:
-        raise HTTPException(status_code=503, detail=result["error"])
-
-    # 为前端补充 key / region 字段
-    for idx in result.get("indices", []):
-        code = idx.get("code", "")
-        idx.setdefault("key", _CODE_KEY_MAP.get(code, code))
-        idx.setdefault("region", region)
-
+    
+    all_indices = []
+    all_indices.extend(_fetch_cn_indices())
+    all_indices.extend(_fetch_hk_indices())
+    all_indices.extend(_fetch_us_indices())
+    
+    if not all_indices:
+        raise HTTPException(status_code=503, detail="No market index data available")
+    
     return {
-        "indices": result["indices"],
+        "indices": all_indices,
         "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source": "akshare",
+        "source": "akshare+sina",
     }
+
 
 
 
