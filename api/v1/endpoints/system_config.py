@@ -48,6 +48,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------------
+# /market_indices — 主要指数实时行情 (Portal topbar 依赖)
+# ---------------------------------------------------------------------------
+# code → key 映射 (前端用 key 做 DOM 匹配)
+_CODE_KEY_MAP = {
+    "sh000001": "shanghai",
+    "sz399001": "shenzhen",
+    "sz399006": "chinext",
+    "sh000688": "star50",
+    "sh000016": "sse50",
+    "sh000300": "csi300",
+}
+
+
+@router.get(
+    "/market_indices",
+    summary="Get major market indices",
+    description="Return real-time major market index data for Portal topbar.",
+)
+async def get_market_indices(region: str = "cn"):
+    """REST wrapper around the agent tool ``_handle_get_market_indices``."""
+    from datetime import datetime, timezone
+    from src.agent.tools.market_tools import _handle_get_market_indices
+
+    result = _handle_get_market_indices(region=region)
+
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+
+    # 为前端补充 key / region 字段
+    for idx in result.get("indices", []):
+        code = idx.get("code", "")
+        idx.setdefault("key", _CODE_KEY_MAP.get(code, code))
+        idx.setdefault("region", region)
+
+    return {
+        "indices": result["indices"],
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": "akshare",
+    }
+
+
+
 @router.get(
     "/scheduler/status",
     summary="Get runtime scheduler status",
