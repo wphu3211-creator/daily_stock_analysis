@@ -19,6 +19,7 @@ Daily Stock Analysis - FastAPI 后端服务入口
 """
 
 import logging
+import os
 
 from src.config import setup_env, get_config
 from src.logging_config import setup_logging
@@ -30,8 +31,12 @@ config = get_config()
 level_name = (config.log_level or "INFO").upper()
 level = getattr(logging, level_name, logging.INFO)
 
+# Allow overriding the log directory via environment variable.
+_log_dir = os.environ.get("DSA_LOG_DIR", "logs")
+
 setup_logging(
     log_prefix="api_server",
+    log_dir=_log_dir,
     console_level=level,
     extra_quiet_loggers=['uvicorn', 'fastapi'],
 )
